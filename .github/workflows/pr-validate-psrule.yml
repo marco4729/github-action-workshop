@@ -1,0 +1,90 @@
+name: Bicep CI Workflow
+
+# on:
+#   push:
+#     branches:
+#       - '*'
+#   pull_request:
+#     branches:
+#       - '*'
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bicep-ci:
+    runs-on: windows-latest
+
+    steps:
+      # Checkout the repository
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Install Azure CLI
+      - name: Install Azure CLI
+        run: |
+          Invoke-WebRequest -Uri https://aka.ms/installazurecliwindows -OutFile AzureCLI.msi
+          Start-Process msiexec.exe -ArgumentList '/i AzureCLI.msi /quiet' -NoNewWindow -Wait
+        shell: powershell
+
+      # Install Bicep CLI
+      - name: Install Bicep CLI
+        run: az bicep install
+        shell: powershell
+
+      # Install PSRule for Azure
+      - name: Install PSRule for Azure
+        run: Install-Module -Name PSRule.Rules.Azure -Force -Scope CurrentUser
+        shell: powershell
+
+      # Get changed .bicep files
+      - name: Get Changed Bicep Files
+        id: get_changed_files
+        run: |
+          git fetch origin main:main
+          $files = git diff --name-only main | Select-String '\.bicep$'
+          if ($files -eq $null) {
+            Write-Output "no-bicep-files"
+          }
+          echo "::set-output name=files::$files"
+        shell: powershell
+        continue-on-error: true
+
+      # Lint Bicep files
+      - name: Lint Bicep Files
+        if: steps.get_changed_files.outputs.files != 'no-bicep-files'
+        run: |
+          $files = git diff --name-only main | Select-String '\.bicep$'
+          foreach ($file in $files) {
+            Write-Output "Linting $file"
+            az bicep build --file $file
+          }
+        shell: powershell
+
+      # Convert Bicep files to ARM templates
+      - name: Convert Bicep Files to ARM Templates
+        if: steps.get_changed_files.outputs.files != 'no-bicep-files'
+        run: |
+          $files = git diff --name-only main | Select-String '\.bicep$' | ForEach-Object { $_.Line }
+          foreach ($file in $files) {
+            $jsonFile = "$($file -replace '\.bicep$', '.json')"
+            Write-Output "Converting $file to $jsonFile"
+            az bicep build --file $file --outfile $jsonFile
+          }
+        shell: powershell
+
+      # Validate converted ARM JSON files with PSRule
+      - name: Validate ARM Templates with PSRule
+        if: steps.get_changed_files.outputs.files != 'no-bicep-files'
+        run: |
+          Import-Module PSRule.Rules.Azure
+          $jsonFiles = git diff --name-only main | Select-String '\.bicep$' | ForEach-Object { $_.Line -replace '\.bicep$', '.json' }
+          if ($jsonFiles) {
+            Write-Output "Validating ARM templates with PSRule"
+            Invoke-PSRule -InputPath $jsonFiles -Module 'PSRule.Rules.Azure' -Format File
+          } else {
+            Write-Output "No ARM templates to validate."
+          }
+        shell: powershell

@@ -1,0 +1,59 @@
+name: Bicep Lint and Checkov Validation
+
+# on:
+#   push:
+#     branches:
+#       - main
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bicep-lint-and-checkov-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the pull request repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Install Azure CLI
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      # Install Bicep CLI via Azure CLI
+      - name: Install Bicep CLI
+        run: |
+          az bicep install
+
+      # Install Checkov
+      - name: Install Checkov
+        run: |
+          pip install checkov
+
+      # Get the list of changed .bicep files in the pull request
+      - name: Get changed bicep files
+        id: changed_files
+        run: |
+          git fetch origin master
+          git diff --name-only origin/main | grep '\.bicep$' || echo "no-bicep-files"
+        continue-on-error: true
+      
+      # Lint only changed Bicep files
+      - name: Lint Bicep files
+        if: steps.changed_files.outputs.files != 'no-bicep-files'
+        run: |
+          for file in $(git diff --name-only origin/main | grep '\.bicep$'); do
+            echo "Linting $file"
+            az bicep build --file "$file"
+          done
+
+      # Validate with Checkov only changed Bicep files
+      - name: Validate ARM templates with Checkov
+        if: steps.changed_files.outputs.files != 'no-bicep-files'
+        run: |
+          for file in $(git diff --name-only origin/main | grep '\.bicep$'); do
+            echo "Validating $file with Checkov"
+            checkov -f "$file" --framework bicep
+          done
